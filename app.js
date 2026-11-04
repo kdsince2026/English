@@ -180,8 +180,12 @@
   async function renderLogin(r) {
     var invite = r.params.get('invite') || '';
     if (invite) ui.loginMode = 'register';
-    var teacherExists = true;
-    try { var tr = await sb.rpc('teacher_exists'); if (!tr.error) teacherExists = !!tr.data; } catch (e) { /* offline */ }
+    var teacherExists = true, connErr = '';
+    try {
+      var tr = await sb.rpc('teacher_exists');
+      if (tr.error) connErr = 'База ответила ошибкой: ' + (tr.error.message || tr.error.code || '') + '. Проверьте, что schema.sql запущен в Supabase.';
+      else teacherExists = !!tr.data;
+    } catch (e) { connErr = 'Не удаётся связаться с базой Supabase. Проверьте адрес в config.js и интернет-соединение.'; }
     var reg = ui.loginMode === 'register';
     var form;
     if (!reg) {
@@ -208,11 +212,11 @@
         '</form>';
     }
     app.innerHTML = '<div class="wrap"><div style="padding-top:18px;font-family:var(--display);font-weight:800;font-size:22px;letter-spacing:-.05em;color:var(--pink)">English</div>' +
-      '<div class="auth"><div style="display:flex;flex-direction:column"><h1 class="display l" style="margin-bottom:-.16em;position:relative;z-index:2">' + (reg ? 'welcome' : 'hello') + '</h1>' +
+      '<div class="auth"><div style="display:flex;flex-direction:column"><h1 class="display" style="font-size:clamp(48px,7vw,104px);margin-bottom:-.16em;position:relative;z-index:2">' + (reg ? 'welcome' : 'hello') + '</h1>' +
       '<div class="hero-card" style="flex:1"><span class="script">' + (reg ? 'to class!' : 'again!') + '</span></div></div>' +
       '<div style="display:flex;flex-direction:column;justify-content:center"><div class="card" style="padding:clamp(24px,4vw,40px)">' +
       '<div class="pills" style="margin-bottom:20px"><button type="button" class="pill' + (!reg ? ' on' : '') + '" data-act="mode" data-mode="login">ВХОД</button><button type="button" class="pill' + (reg ? ' on' : '') + '" data-act="mode" data-mode="register">РЕГИСТРАЦИЯ</button></div>' +
-      form + '</div></div></div>' + footer() + '</div>';
+      (connErr ? '<p class="err" style="margin-bottom:12px">' + esc(connErr) + '</p>' : '') + form + '</div></div></div>' + footer() + '</div>';
   }
   function showErr(form, msg) { var e = form.querySelector('.err'); if (e) { e.textContent = msg; e.hidden = !msg; } }
   function showOk(form, msg) { var e = form.querySelector('.ok'); if (e) { e.textContent = msg; e.hidden = !msg; } }
