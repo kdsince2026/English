@@ -123,7 +123,7 @@
   function isFresh(w) { return w.added_by && w.added_by !== S.teacherId && (Date.now() - new Date(w.created_at)) < 7 * 864e5; }
 
   // ---------------------------------------------------------------- shell
-  function footer() { return '<footer class="foot"><span>English</span><span>English b1 · ' + new Date().getFullYear() + '</span></footer>'; }
+  function footer() { return '<footer class="foot"><span>English</span><span>English · ' + new Date().getFullYear() + '</span></footer>'; }
   function shell(path, inner) {
     var links = [['home', 'HOME'], ['homework', 'HOMEWORK'], ['vocabulary', 'VOCABULARY'], ['materials', 'MATERIALS'], ['progress', 'PROGRESS']];
     var nav = links.map(function (l) {
