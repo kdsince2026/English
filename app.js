@@ -15,7 +15,7 @@
 
   // ---------------------------------------------------------------- state
   var S = { session: null, me: null, teacherId: null, students: [], invites: [], studentId: localStorage.getItem('studentId') || null };
-  var ui = { hwTab: 'todo', folderId: null, matFilter: 'all', matAdd: false, loginMode: 'login', period: 'weeks', notes: null, train: null, lastPath: null };
+  var ui = { hwEdit: null, wordEdit: null, matEdit: null, hwTab: 'todo', folderId: null, matFilter: 'all', matAdd: false, loginMode: 'login', period: 'weeks', notes: null, train: null, lastPath: null };
 
   // ---------------------------------------------------------------- helpers
   function esc(s) {
@@ -100,6 +100,7 @@
   }
   var SPEAK = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>';
   var XICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+  var PENCIL = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>';
   var UPLOAD = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>';
 
   function svgI(inner) { return '<svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + inner + '</svg>'; }
@@ -149,6 +150,17 @@
     var prog = userId ? await q(sb.from('word_progress').select('*').eq('user_id', userId)) : [];
     var pm = new Map(prog.map(function (p) { return [p.word_id, p]; }));
     return { folders: folders, words: words, pm: pm };
+  }
+  async function loadGoals(st) { return st ? await q(sb.from('word_goals').select('*').eq('student_id', st).order('created_at')) : []; }
+  function goalStats(g, v) {
+    var words = g.folder_id ? v.words.filter(function (w) { return w.folder_id === g.folder_id; }) : v.words;
+    var learned = words.filter(function (w) { var p = v.pm.get(w.id); return p && p.status === 'learned'; }).length;
+    var due = words.filter(function (w) { return isDue(w, v.pm); }).length;
+    var f = g.folder_id ? v.folders.filter(function (x) { return x.id === g.folder_id; })[0] : null;
+    return { learned: Math.min(learned, g.target), target: g.target, due: due, pct: Math.min(100, Math.round(learned / g.target * 100)), scope: f ? '«' + f.name + '»' : 'из всех папок', done: learned >= g.target };
+  }
+  function goalTitle(g, gs) {
+    return 'Выучить ' + g.target + ' ' + plural(g.target, 'слово', 'слова', 'слов') + ' ' + gs.scope + (g.due_date ? ' до ' + dayMonth(parseDate(g.due_date)) : '');
   }
   function isDue(w, pm) { var p = pm.get(w.id); return !p || new Date(p.due_at) <= new Date(); }
   function isFresh(w) { return w.added_by && w.added_by !== S.teacherId && (Date.now() - new Date(w.created_at)) < 7 * 864e5; }
@@ -288,8 +300,10 @@
       st ? q(sb.from('homework').select('id,title,status,due_date,lesson_label').eq('student_id', st).order('created_at', { ascending: false })) : [],
       loadVocab(st),
       [],
-      q(sb.from('materials').select('id,title,group_name,url,file_name,added_by').order('created_at', { ascending: false }).limit(4))
+      q(sb.from('materials').select('id,title,group_name,url,file_name,added_by').order('created_at', { ascending: false }).limit(4)),
+      loadGoals(st)
     ]);
+    var goals = res[5], g0 = goals[0] ? goalStats(goals[0], res[2]) : null;
     var lessons = res[0], hw = res[1], v = res[2], invites = res[3], mats = res[4];
     var nextIdx = -1;
     for (var i = 0; i < lessons.length; i++) { if (new Date(lessons[i].starts_at).getTime() > now.getTime() - 3600e3) { nextIdx = i; break; } }
@@ -306,7 +320,7 @@
     var own = v.folders.length - topics;
 
     var clues = [];
-    if (st) clues.push(due ? (t ? 'ученице ' : '') + 'повторить ' + due + ' ' + plural(due, 'слово', 'слова', 'слов') + ' сегодня' : 'все слова на сегодня повторены');
+    if (g0) clues.push('цель: ' + goalTitle(goals[0], g0).toLowerCase() + ' — выучено ' + g0.learned + ' из ' + g0.target);
     if (nearest) clues.push((nearest.due_date ? 'до ' + dayMonth(parseDate(nearest.due_date)) + ' — ' : 'домашка — ') + esc(nearest.title));
     if (next) { var nd0 = new Date(next.starts_at); clues.push(DAYS[nd0.getDay()] + ', ' + hhmm(nd0) + ' — урок ' + (nextIdx + 1) + (next.topic ? ': ' + esc(next.topic) : '')); }
 
@@ -331,17 +345,17 @@
         v.words.length ? v.words.slice(0, 2).map(function (w) { return '<b>' + esc(w.en) + '</b><small>' + esc(w.ru) + '</small>'; }).join('<i></i>') : '<b>Слов пока нет</b>') +
       fcard('#/materials', 'var(--sky2)', 'материалы', 'Mate<em>rials</em>', 'Шпаргалки, подкасты, видео и файлы', mats.length ? 'новое: ' + esc(mats[0].group_name) : 'пока пусто', ICON.key,
         mats.length ? mats.slice(0, 2).map(function (m) { return '<b>' + esc(m.title) + '</b><small>' + esc(m.group_name) + '</small>'; }).join('<i></i>') : '<b>Материалов пока нет</b>') +
-      fcard('#/progress', 'var(--blue-paper)', 'прогресс', 'Pro<em>gress</em>', 'Выученные слова, уроки и оценки навыков', learned + ' ' + plural(learned, 'слово', 'слова', 'слов') + ' выучено', ICON.lens,
+      fcard('#/progress', 'var(--blue-paper)', 'прогресс', 'Pro<em>gress</em>', 'Цели, уроки и оценки навыков', g0 ? 'цель: ' + g0.learned + ' из ' + g0.target + ' слов' : pastCount + ' ' + plural(pastCount, 'урок пройден', 'урока пройдено', 'уроков пройдено'), ICON.lens,
         '<b>' + pastCount + ' ' + plural(pastCount, 'урок', 'урока', 'уроков') + '</b><small>уже позади</small>') +
       '</div></section>';
 
     // --- dark band: stickies
     var notes = [];
-    if (st) notes.push(['#/train', ICON.clip, due ? 'повторить ' + due + ' ' + plural(due, 'слово', 'слова', 'слов') : 'все слова повторены', 'сегодня']);
+    if (st) notes.push(['#/train', ICON.clip, g0 ? 'выучено ' + g0.learned + ' из ' + g0.target + ' ' + plural(g0.target, 'слова', 'слов', 'слов') : 'потренировать слова', g0 ? 'цель' : 'тренировка']);
     notes.push(['#/homework', ICON.bow, nearest ? esc(nearest.title) : 'вся домашка сдана', nearest && nearest.due_date ? 'до ' + dayMonth(parseDate(nearest.due_date)) : 'домашка']);
     notes.push(['#/home', ICON.lens, next ? 'урок: ' + esc(next.topic || 'без темы') : 'урок скоро назначат', next ? DAYS_SHORT[new Date(next.starts_at).getDay()] + ', ' + hhmm(new Date(next.starts_at)) : 'следующий урок']);
     if (t && st) notes.push(['#/homework', ICON.key, waiting + ' ' + plural(waiting, 'работа ждёт', 'работы ждут', 'работ ждут') + ' проверки', '+' + fresh + ' ' + plural(fresh, 'слово', 'слова', 'слов') + ' от ученицы']);
-    else notes.push(['#/progress', ICON.key, learned + ' ' + plural(learned, 'слово выучено', 'слова выучено', 'слов выучено'), 'прогресс']);
+    else notes.push(['#/materials', ICON.key, mats.length ? esc(mats[0].title) : 'полезные материалы', 'материалы']);
     var dark = '<section class="darkband bleed"><span class="eyebrow">(улики на сегодня)</span><h2 class="display m">Что <em>в планах</em>…</h2><div class="stickies">' +
       notes.map(function (n) { return '<a class="sticky" href="' + n[0] + '">' + n[1] + '<span>' + n[2] + '</span><small>' + n[3] + '</small></a>'; }).join('') +
       '</div><a class="btn sky" href="#/train" style="min-width:240px">Repeat vocabulary</a></section>';
@@ -392,7 +406,7 @@
 
     // --- trail
     var trail = '<section class="trail bleed"><div class="section-title"><span class="eyebrow">(маршрут курса)</span><h2 class="display m">You are <em>here</em></h2>' +
-      '<p class="muted" style="margin:0">' + pastCount + ' ' + plural(pastCount, 'урок пройден', 'урока пройдено', 'уроков пройдено') + ' · ' + learned + ' ' + plural(learned, 'слово выучено', 'слова выучено', 'слов выучено') + ' · ' + doneAll + ' из ' + hw.length + ' домашек сдано</p></div>' +
+      '<p class="muted" style="margin:0">' + pastCount + ' ' + plural(pastCount, 'урок пройден', 'урока пройдено', 'уроков пройдено') + (g0 ? ' · цель: ' + g0.learned + ' из ' + g0.target + ' слов' : '') + ' · ' + doneAll + ' из ' + hw.length + ' домашек сдано</p></div>' +
       '<div class="card">' + routeHtml(lessons) + '</div><div style="display:flex;justify-content:center"><a class="btn outline" href="#/progress">Смотреть прогресс</a></div></section>';
 
     return hero + marquee + folders + dark + stripes + klass + trail;
@@ -423,6 +437,18 @@
     var cards = list.map(function (h) {
       var tf = files.filter(function (f) { return f.homework_id === h.id && f.kind === 'task'; });
       var af = files.filter(function (f) { return f.homework_id === h.id && f.kind === 'answer'; });
+      if (t && ui.hwEdit === h.id) {
+        return '<article class="card hw"><form class="form hw-main" data-form="hw-edit" data-id="' + esc(h.id) + '"><span class="label pk">редактирование задания</span>' +
+          '<div class="fields"><label class="field wide">НАЗВАНИЕ<input name="title" required value="' + esc(h.title) + '"></label>' +
+          '<label class="field">К УРОКУ<input name="label" value="' + esc(h.lesson_label) + '"></label>' +
+          '<label class="field" style="flex-basis:160px">СРОК<input name="due" type="date" value="' + esc(h.due_date || '') + '"></label></div>' +
+          '<label class="field full">ОПИСАНИЕ<textarea name="desc" rows="4">' + esc(h.description) + '</textarea></label>' +
+          (tf.length ? '<div class="files">' + tf.map(function (f) {
+            return '<span class="file" style="cursor:default">' + extTag(f.name) + '<span>' + esc(f.name) + '</span><button type="button" class="iconbtn" style="width:28px;height:28px" aria-label="Удалить файл ' + esc(f.name) + '" data-act="hwfile-del" data-id="' + esc(f.id) + '" data-path="' + esc(f.path) + '">' + XICON + '</button></span>';
+          }).join('') + '</div>' : '') +
+          '<label class="drop">' + UPLOAD + '<span>ДОБАВИТЬ ФАЙЛЫ</span><small data-files>Фото, PDF, DOCX · до 20 МБ</small><input type="file" name="files" multiple accept="image/*,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,audio/*" data-change="show-files"></label>' +
+          '<p class="err" hidden></p><div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn" type="submit">Сохранить</button><button type="button" class="btn outline" data-act="hw-edit" data-id="">Отмена</button></div></form></article>';
+      }
       var badge = h.status === 'todo' ? '<span class="badge b-todo">ОСТАЛОСЬ</span>' : h.status === 'done' ? '<span class="badge b-done">ЖДЁТ ПРОВЕРКИ</span>' : '<span class="badge b-checked">ПРОВЕРЕНО</span>';
       var side = '<span class="label">' + (h.status === 'todo' ? esc(dueText(h.due_date)) : h.status === 'done' ? 'СДАНО' + (h.done_at ? ': ' + dayMonth(new Date(h.done_at)).toUpperCase() : '') : 'ПРОВЕРЕНО' + (h.checked_at ? ': ' + dayMonth(new Date(h.checked_at)).toUpperCase() : '')) + '</span>';
       if (!t && h.status === 'todo') {
@@ -437,7 +463,7 @@
           '<label class="field full">ОЦЕНКА<input name="grade" value="' + esc(h.grade) + '" placeholder="отлично!"></label>' +
           '<button class="btn pink" type="submit">' + (h.status === 'checked' ? 'ОБНОВИТЬ КОММЕНТАРИЙ' : 'ОТМЕТИТЬ ПРОВЕРЕННЫМ') + '</button></form>';
       }
-      if (t) side += '<button type="button" class="linkbtn" style="align-self:flex-start" data-act="hw-del" data-id="' + esc(h.id) + '">удалить задание</button>';
+      if (t) side += '<div style="display:flex;gap:16px;flex-wrap:wrap"><button type="button" class="linkbtn" data-act="hw-edit" data-id="' + esc(h.id) + '">редактировать</button><button type="button" class="linkbtn" data-act="hw-del" data-id="' + esc(h.id) + '">удалить задание</button></div>';
       return '<article class="card hw"><div class="hw-main"><div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">' + (h.lesson_label ? '<span class="label">//' + esc(h.lesson_label).toUpperCase() + '</span>' : '') + badge + '</div>' +
         '<h2 class="h3">' + esc(h.title) + '</h2>' + (h.description ? '<p class="desc">' + esc(h.description) + '</p>' : '') +
         (tf.length ? '<div class="files">' + tf.map(function (f) { return fileChip(f); }).join('') + '</div>' : '') +
@@ -456,11 +482,13 @@
   async function pageVocab() {
     var st = sid(), t = isT();
     var v = await loadVocab(st);
+    var ffAll = v.folders.length ? await q(sb.from('folder_files').select('*').in('folder_id', v.folders.map(function (f) { return f.id; })).order('created_at')) : [];
     var topics = v.folders.filter(function (f) { return f.owner_id === S.teacherId; });
     var mine = v.folders.filter(function (f) { return f.owner_id !== S.teacherId; });
     if (!v.folders.some(function (f) { return f.id === ui.folderId; })) ui.folderId = v.folders[0] ? v.folders[0].id : null;
     var folder = v.folders.filter(function (f) { return f.id === ui.folderId; })[0];
     var counts = {}; v.words.forEach(function (w) { counts[w.folder_id] = (counts[w.folder_id] || 0) + 1; });
+    ffAll.forEach(function (x) { counts[x.folder_id] = (counts[x.folder_id] || 0) + 1; });
     function fbtn(f) {
       var hasNew = t && v.words.some(function (w) { return w.folder_id === f.id && isFresh(w); });
       return '<button type="button" class="folder' + (f.id === ui.folderId ? ' on' : '') + '" data-act="folder" data-id="' + esc(f.id) + '"><span>' + esc(f.name) + (hasNew ? '<span class="dot" aria-label="есть новые слова"></span>' : '') + '</span><span style="font-size:12px;font-weight:800">' + (counts[f.id] || 0) + '</span></button>';
@@ -489,11 +517,34 @@
       } else {
         main += '<p class="hint">' + (t ? 'Это папка ученицы — вы видите её слова, а добавляет их она. Новые за неделю отмечены розовым.' : 'Слова в топики добавляет учитель. Своё слово можно добавить в «Мои папки».') + '</p>';
       }
+      var ff = ffAll.filter(function (x) { return x.folder_id === folder.id; });
+      if (ff.length || own) {
+        main += '<section class="card col" style="gap:12px;padding:18px"><span class="label">Файлы и ссылки</span>' +
+          (ff.length ? '<div class="files">' + ff.map(function (x) {
+            var chip = x.file_path
+              ? '<button type="button" class="file" data-act="open-file" data-path="' + esc(x.file_path) + '">' + extTag(x.file_name) + '<span>' + esc(x.title) + '</span></button>'
+              : '<a class="file" href="' + esc(safeUrl(x.url)) + '" target="_blank" rel="noopener" style="text-decoration:none"><span class="ext">ССЫЛКА</span><span>' + esc(x.title) + '</span></a>';
+            return '<span style="display:inline-flex;align-items:center;gap:2px">' + chip + ((own || t) ? '<button type="button" class="iconbtn" style="width:30px;height:30px" aria-label="Удалить ' + esc(x.title) + '" data-act="ff-del" data-id="' + esc(x.id) + '" data-path="' + esc(x.file_path) + '">' + XICON + '</button>' : '') + '</span>';
+          }).join('') + '</div>' : '<span class="muted" style="font-size:13px">Сюда можно положить список слов файлом (PDF, DOCX, фото) или ссылкой.</span>') +
+          (own ? '<form class="form" data-form="ff-new" data-id="' + esc(folder.id) + '" style="gap:10px"><div class="fields">' +
+            '<label class="field wide">НАЗВАНИЕ<input name="title" required placeholder="Например: слова урока 5"></label>' +
+            '<label class="field wide">ССЫЛКА<input name="url" type="url" placeholder="https://"></label>' +
+            '<label class="drop" style="flex:1 1 200px;padding:12px">ИЛИ ФАЙЛ<small data-files>PDF, DOCX, фото · до 20 МБ</small><input type="file" name="file" accept="image/*,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.csv,audio/*" data-change="show-files"></label>' +
+            '<button class="btn" type="submit">+ Добавить</button></div><p class="err" hidden></p></form>' : '') +
+          '</section>';
+      }
       main += '<div class="grid" data-words>' + (words.map(function (w) {
         var p = v.pm.get(w.id), s = STAT[p ? p.status : 'new'];
         var fr = t && isFresh(w);
+        if (own && ui.wordEdit === w.id) {
+          return '<form class="word form" data-form="word-save" data-id="' + esc(w.id) + '" style="gap:8px">' +
+            '<label class="field full">ENGLISH<input name="en" required value="' + esc(w.en) + '"></label>' +
+            '<label class="field full">ПЕРЕВОД<input name="ru" value="' + esc(w.ru) + '"></label>' +
+            '<label class="field full">ПРИМЕР<input name="ex" value="' + esc(w.example) + '"></label>' +
+            '<p class="err" hidden></p><div style="display:flex;gap:8px"><button class="btn sm" type="submit">Сохранить</button><button type="button" class="btn sm outline" data-act="word-edit" data-id="">Отмена</button></div></form>';
+        }
         return '<div class="word' + (fr ? ' fresh' : '') + '" data-text="' + esc((w.en + ' ' + w.ru).toLowerCase()) + '"><div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><span class="en">' + esc(w.en) + '</span><span style="display:flex;gap:4px"><button type="button" class="iconbtn" aria-label="Послушать" data-act="say" data-text="' + esc(w.en) + '">' + SPEAK + '</button>' +
-          (own ? '<button type="button" class="iconbtn" aria-label="Удалить слово" data-act="word-del" data-id="' + esc(w.id) + '">' + XICON + '</button>' : '') + '</span></div>' +
+          (own ? '<button type="button" class="iconbtn" aria-label="Редактировать слово" data-act="word-edit" data-id="' + esc(w.id) + '">' + PENCIL + '</button><button type="button" class="iconbtn" aria-label="Удалить слово" data-act="word-del" data-id="' + esc(w.id) + '">' + XICON + '</button>' : '') + '</span></div>' +
           '<span class="ru">' + esc(w.ru) + '</span>' + (w.example ? '<span class="ex">' + esc(w.example) + '</span>' : '') +
           '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">' + (st ? '<span class="badge ' + s[1] + '">' + s[0] + '</span>' : '') + (fr ? '<span class="badge b-fresh">НОВОЕ ОТ УЧЕНИЦЫ</span>' : '') + '</div></div>';
       }).join('') || '<p class="muted">В папке пока нет слов.</p>') + '</div>';
@@ -621,16 +672,26 @@
             ? '<button type="button" class="btn sm outline" data-act="open-file" data-path="' + esc(m.file_path) + '">ОТКРЫТЬ ФАЙЛ</button>'
             : '<a class="btn sm outline" href="' + esc(safeUrl(m.url)) + '" target="_blank" rel="noopener">ОТКРЫТЬ</a>';
           var canDel = t || m.added_by === S.me.id;
+          if (canDel && ui.matEdit === m.id) {
+            return '<form class="card form" data-form="mat-save" data-id="' + esc(m.id) + '" style="padding:18px;gap:10px">' +
+              '<label class="field full">НАЗВАНИЕ<input name="title" required value="' + esc(m.title) + '"></label>' +
+              '<label class="field full">ГРУППА<input name="group" required list="mat-groups" value="' + esc(m.group_name) + '"></label>' +
+              '<label class="field full">КОММЕНТАРИЙ<input name="note" value="' + esc(m.note) + '"></label>' +
+              (m.file_path ? '<label class="drop" style="padding:12px">ЗАМЕНИТЬ ФАЙЛ<small data-files>сейчас: ' + esc(m.file_name) + '</small><input type="file" name="file" accept="image/*,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,audio/*" data-change="show-files"></label>'
+                : '<label class="field full">ССЫЛКА<input name="url" type="url" value="' + esc(m.url) + '"></label>') +
+              '<p class="err" hidden></p><div style="display:flex;gap:8px"><button class="btn sm" type="submit">Сохранить</button><button type="button" class="btn sm outline" data-act="mat-edit" data-id="">Отмена</button></div></form>';
+          }
           return '<div class="card' + (fromStudent ? ' pinkfill' : '') + '" style="padding:18px;display:flex;flex-direction:column;gap:8px"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px">' + type +
             '<span class="label" style="font-size:10px;color:' + (fromStudent ? 'var(--pink-text)' : 'var(--blue)') + '">' + (fromStudent ? 'ОТ УЧЕНИЦЫ' : 'ОТ УЧИТЕЛЯ') + '</span></div>' +
             '<b style="font-size:16px;color:var(--ink);line-height:1.3">' + esc(m.title) + '</b>' + (m.note ? '<span class="muted" style="font-size:13px;line-height:1.45">' + esc(m.note) + '</span>' : '') +
-            '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:auto;padding-top:6px">' + open + (canDel ? '<button type="button" class="linkbtn" data-act="mat-del" data-id="' + esc(m.id) + '">удалить</button>' : '') + '</div></div>';
+            '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:auto;padding-top:6px">' + open + (canDel ? '<span style="display:flex;gap:12px"><button type="button" class="linkbtn" data-act="mat-edit" data-id="' + esc(m.id) + '">изменить</button><button type="button" class="linkbtn" data-act="mat-del" data-id="' + esc(m.id) + '">удалить</button></span>' : '') + '</div></div>';
         }).join('') + '</div></section>';
     }).join('');
 
     return pageHead('полезные материалы', 'Mate<em>rials</em>', '<button type="button" class="btn" data-act="mat-toggle">' + (ui.matAdd ? 'Закрыть' : '+ Добавить материал') + '</button>') + addPanel +
       (groups.length ? '<div class="pills">' + filters.map(function (f) { return '<button type="button" class="pill' + (ui.matFilter === f[0] ? ' on' : '') + '" data-act="mat-filter" data-f="' + esc(f[0]) + '">' + esc(f[1]) + '</button>'; }).join('') + '</div>' : '') +
-      (body || '<p class="hint">Материалов пока нет — добавьте первый кнопкой выше.</p>');
+      (body || '<p class="hint">Материалов пока нет — добавьте первый кнопкой выше.</p>') +
+      '<datalist id="mat-groups">' + groups.map(function (g) { return '<option value="' + esc(g) + '"></option>'; }).join('') + '</datalist>';
   }
 
   // ---------------------------------------------------------------- PROGRESS
@@ -644,9 +705,10 @@
       q(sb.from('homework').select('status').eq('student_id', st)),
       q(sb.from('student_notes').select('*').eq('student_id', st).maybeSingle()),
       q(sb.from('review_log').select('created_at').eq('user_id', st).gte('created_at', since).order('created_at', { ascending: false }).limit(5000)),
-      loadVocab(st)
+      loadVocab(st),
+      loadGoals(st)
     ]);
-    var lessons = res[0], hw = res[1], notes = res[2], logs = res[3], v = res[4];
+    var lessons = res[0], hw = res[1], notes = res[2], logs = res[3], v = res[4], goals = res[5];
     ui.notes = { student_id: st, skills: (notes && notes.skills) || Object.assign({}, DEFAULT_SKILLS), note: (notes && notes.note) || '' };
     var now = new Date();
     var learnedList = []; v.pm.forEach(function (p) { if (p.status === 'learned' && p.learned_at) learnedList.push(new Date(p.learned_at)); });
@@ -686,18 +748,38 @@
         '</span></div><div class="bar"><div style="width:' + val * 10 + '%"></div></div></div>';
     }).join('');
     var hwTotal = Math.max(1, hw.length);
+    var goalCards = goals.map(function (g) {
+      var gs = goalStats(g, v);
+      var mineG = g.set_by === S.me.id;
+      var canDel = t || mineG;
+      return '<div class="index-card" style="border-top-color:' + (gs.done ? '#7FB08A' : 'var(--sky2)') + '"><div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><span class="h3" style="font-size:21px">' + esc(goalTitle(g, gs)) + '</span>' +
+        (canDel ? '<button type="button" class="iconbtn" aria-label="Удалить цель" data-act="goal-del" data-id="' + esc(g.id) + '">' + XICON + '</button>' : '') + '</div>' +
+        '<div class="bar"><div style="width:' + gs.pct + '%"></div></div>' +
+        '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:13px;font-weight:600"><span>выучено ' + gs.learned + ' из ' + gs.target + (gs.done ? ' — цель достигнута!' : '') + '</span><span class="muted">' + (g.set_by === S.teacherId ? 'цель от учителя' : 'своя цель') + '</span></div>' +
+        (!gs.done && gs.due ? '<a class="btn sm outline" href="#/train' + (g.folder_id ? '?folder=' + encodeURIComponent(g.folder_id) : '') + '" style="align-self:flex-start">Повторить сегодня: ' + gs.due + '</a>' : '') + '</div>';
+    }).join('');
+    var goalForm = '<form class="index-card form" data-form="goal-new" style="gap:10px;border-top-color:var(--ink)"><span class="label">Новая цель' + (t ? ' для ' + esc(studentName(st)) : '') + '</span>' +
+      '<div class="fields"><label class="field" style="flex-basis:90px">СЛОВ<input name="target" type="number" min="1" max="10000" required value="20"></label>' +
+      '<label class="field" style="flex-basis:140px">ДО<input name="due" type="date"></label></div>' +
+      '<label class="field full">ИЗ ПАПКИ<select name="folder"><option value="">все папки</option>' + v.folders.map(function (f) { return '<option value="' + esc(f.id) + '">' + esc(f.name) + '</option>'; }).join('') + '</select></label>' +
+      '<p class="err" hidden></p><button class="btn sm" type="submit">Поставить цель</button></form>';
+    var goalsSection = '<section class="col" style="gap:16px"><div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px"><h2 class="display s">Цели <em>по словам</em></h2><span class="label">' + (t ? '//ставите вы или ученица' : '//ставит учитель или ты сама') + '</span></div>' +
+      (goals.length ? '' : '<p class="muted" style="margin:0">Счётчик выученных слов появится, когда будет поставлена цель.</p>') +
+      '<div class="class-grid">' + goalCards + goalForm + '</div></section>';
     var noteBlock = t
       ? '<form class="form" data-form="note" style="gap:10px"><label class="field full">КОММЕНТАРИЙ ДЛЯ УЧЕНИЦЫ<textarea name="note" rows="4" style="border-color:transparent">' + esc(ui.notes.note) + '</textarea></label><button class="btn" type="submit" style="align-self:flex-start">СОХРАНИТЬ</button></form>'
       : '<p style="margin:0;font-size:16px;font-weight:600;line-height:1.55;color:var(--ink);white-space:pre-line">' + (ui.notes.note ? esc(ui.notes.note) : 'Учитель пока не оставил комментарий.') + '</p>';
 
     return pageHead('прогресс', 'Pro<em>gress</em>', '<div style="font-family:var(--display);font-style:italic;font-size:24px">you are here</div>') +
       '<div class="stats">' +
-      '<div class="stat"><b>' + learned + '</b><span class="label">' + plural(learned, 'СЛОВО ВЫУЧЕНО', 'СЛОВА ВЫУЧЕНО', 'СЛОВ ВЫУЧЕНО') + '</span><span class="muted" style="font-size:13px">из ' + v.words.length + ' · +' + learnedWeek + ' за неделю</span></div>' +
+      (goals.length ? (function () { var gs = goalStats(goals[0], v); return '<div class="stat"><b>' + gs.learned + '/' + gs.target + '</b><span class="label">ЦЕЛЬ ПО СЛОВАМ</span><span class="muted" style="font-size:13px">' + esc(goalTitle(goals[0], gs).toLowerCase()) + '</span></div>'; })()
+        : '<div class="stat"><b>' + v.words.length + '</b><span class="label">' + plural(v.words.length, 'СЛОВО', 'СЛОВА', 'СЛОВ') + ' В СЛОВАРЕ</span><span class="muted" style="font-size:13px">' + v.folders.length + ' ' + plural(v.folders.length, 'папка', 'папки', 'папок') + '</span></div>') +
       '<div class="stat"><b>' + (hwChecked + hwDone) + '/' + hw.length + '</b><span class="label">ДОМАШЕК СДАНО</span><span class="muted" style="font-size:13px">' + hwTodo + ' осталось, ' + hwDone + ' на проверке</span></div>' +
       '<div class="stat"><b>' + pastLessons + '</b><span class="label">' + plural(pastLessons, 'УРОК ПРОЙДЕН', 'УРОКА ПРОЙДЕНО', 'УРОКОВ ПРОЙДЕНО') + '</span><span class="muted" style="font-size:13px">' + (nextL ? 'следующий — ' + DAYS_SHORT[new Date(nextL.starts_at).getDay()] + ', ' + dayMonth(new Date(nextL.starts_at)) : 'следующий не назначен') + '</span></div>' +
       '<div class="stat pink"><b>' + streak + '</b><span class="label">' + plural(streak, 'ДЕНЬ ПОДРЯД', 'ДНЯ ПОДРЯД', 'ДНЕЙ ПОДРЯД') + '</span><span style="font-size:13px;font-weight:600">повторяешь слова</span></div></div>' +
       '<section class="paper bluep col" style="gap:20px"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:baseline"><h2 class="display s">Маршрут <em>курса</em></h2><span class="label">//УРОКИ НАЗНАЧАЕТ УЧИТЕЛЬ</span></div>' + routeHtml(lessons) + '</section>' +
-      '<div class="row" style="align-items:stretch"><section class="card col" style="flex:1 1 460px;gap:18px"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px"><h2 class="label" style="font-size:16px;margin:0">ВЫУЧЕНО СЛОВ</h2><div class="pills" style="gap:6px"><button type="button" class="pill' + (ui.period === 'weeks' ? ' on' : '') + '" data-act="period" data-p="weeks" style="min-height:32px">НЕДЕЛИ</button><button type="button" class="pill' + (ui.period === 'months' ? ' on' : '') + '" data-act="period" data-p="months" style="min-height:32px">МЕСЯЦЫ</button></div></div><div class="chart">' + chart + '</div><span class="muted" style="font-size:12px">Слово считается выученным после трёх правильных ответов подряд в тренировке.</span></section>' +
+      goalsSection +
+      '<div class="row" style="align-items:stretch">' + (goals.length ? '<section class="card col" style="flex:1 1 460px;gap:18px"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px"><h2 class="label" style="font-size:16px;margin:0">ВЫУЧЕНО СЛОВ</h2><div class="pills" style="gap:6px"><button type="button" class="pill' + (ui.period === 'weeks' ? ' on' : '') + '" data-act="period" data-p="weeks" style="min-height:32px">НЕДЕЛИ</button><button type="button" class="pill' + (ui.period === 'months' ? ' on' : '') + '" data-act="period" data-p="months" style="min-height:32px">МЕСЯЦЫ</button></div></div><div class="chart">' + chart + '</div><span class="muted" style="font-size:12px">Слово считается выученным после трёх правильных ответов подряд в тренировке.</span></section>' : '') +
       '<section class="card col" style="flex:1 1 380px;gap:16px"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:6px;flex-wrap:wrap"><h2 class="label" style="font-size:16px;margin:0">НАВЫКИ</h2><span class="muted" style="font-size:12px">' + (t ? 'оцениваете вы, ученица видит' : 'оценка учителя') + '</span></div>' + skills + '</section></div>' +
       '<div class="row" style="align-items:stretch"><section class="card col" style="flex:1 1 380px;gap:14px"><h2 class="label" style="font-size:16px;margin:0">ДОМАШКА</h2><div class="stack"><div style="width:' + hwChecked / hwTotal * 100 + '%;background:var(--blue)"></div><div style="width:' + hwDone / hwTotal * 100 + '%;background:#9DBBE3"></div><div style="width:' + hwTodo / hwTotal * 100 + '%;background:var(--pink)"></div></div>' +
       '<div class="legend"><span><i style="background:var(--blue)"></i>проверено · ' + hwChecked + '</span><span><i style="background:#9DBBE3"></i>на проверке · ' + hwDone + '</span><span><i style="background:var(--pink)"></i>осталось · ' + hwTodo + '</span></div><a href="#/homework" class="label" style="margin-top:auto">ОТКРЫТЬ ДОМАШКУ →</a></section>' +
@@ -746,6 +828,20 @@
     },
     'invite-del': async function (el) { await q(sb.from('invites').delete().eq('code', el.dataset.code)); refresh(); },
     'lesson-del': async function (el) { if (!confirm('Удалить этот урок?')) return; await q(sb.from('lessons').delete().eq('id', el.dataset.id)); refresh(); },
+    'hw-edit': function (el) { ui.hwEdit = el.dataset.id || null; refresh(); },
+    'hwfile-del': async function (el) {
+      if (!confirm('Удалить этот файл из задания?')) return;
+      if (el.dataset.path) await sb.storage.from('files').remove([el.dataset.path]);
+      await q(sb.from('homework_files').delete().eq('id', el.dataset.id)); refresh();
+    },
+    'word-edit': function (el) { ui.wordEdit = el.dataset.id || null; refresh(); },
+    'mat-edit': function (el) { ui.matEdit = el.dataset.id || null; refresh(); },
+    'ff-del': async function (el) {
+      if (!confirm('Удалить файл или ссылку из папки?')) return;
+      if (el.dataset.path) await sb.storage.from('files').remove([el.dataset.path]);
+      await q(sb.from('folder_files').delete().eq('id', el.dataset.id)); refresh();
+    },
+    'goal-del': async function (el) { if (!confirm('Удалить цель?')) return; await q(sb.from('word_goals').delete().eq('id', el.dataset.id)); refresh(); },
     'hw-tab': function (el) { ui.hwTab = el.dataset.tab; refresh(); },
     'hw-status': async function (el) {
       el.disabled = true;
@@ -836,6 +932,57 @@
         await q(sb.from('homework_files').insert({ homework_id: h.id, kind: 'task', path: path, name: files[i].name, size: files[i].size }));
       }
       ui.hwTab = 'todo'; toast('Задание опубликовано'); refresh();
+    },
+    'hw-edit': async function (f, fd) {
+      var title = String(fd.get('title') || '').trim();
+      if (!title) { showErr(f, 'Введите название задания'); return; }
+      var files = Array.prototype.slice.call(f.querySelector('input[type=file]').files || []);
+      var big = files.filter(function (x) { return x.size > MAX_FILE; })[0];
+      if (big) { showErr(f, 'Файл «' + big.name + '» больше 20 МБ'); return; }
+      var id = f.dataset.id;
+      await q(sb.from('homework').update({ title: title, lesson_label: String(fd.get('label') || '').trim(), description: String(fd.get('desc') || '').trim(), due_date: fd.get('due') || null }).eq('id', id));
+      for (var i = 0; i < files.length; i++) {
+        var path = await upload(files[i], 'homework/' + id);
+        await q(sb.from('homework_files').insert({ homework_id: id, kind: 'task', path: path, name: files[i].name, size: files[i].size }));
+      }
+      ui.hwEdit = null; toast('Задание обновлено'); refresh();
+    },
+    'word-save': async function (f, fd) {
+      var en = String(fd.get('en') || '').trim(); if (!en) { showErr(f, 'Введите слово'); return; }
+      await q(sb.from('words').update({ en: en, ru: String(fd.get('ru') || '').trim(), example: String(fd.get('ex') || '').trim() }).eq('id', f.dataset.id));
+      ui.wordEdit = null; refresh();
+    },
+    'mat-save': async function (f, fd) {
+      var title = String(fd.get('title') || '').trim(), group = String(fd.get('group') || '').trim();
+      if (!title || !group) { showErr(f, 'Заполните название и группу'); return; }
+      var row = { title: title, group_name: group, note: String(fd.get('note') || '').trim() };
+      if (fd.has('url')) { var url = String(fd.get('url') || '').trim(); if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url; if (!url) { showErr(f, 'Добавьте ссылку'); return; } row.url = url; }
+      var fileInput = f.querySelector('input[type=file]'), file = fileInput && fileInput.files[0];
+      if (file) {
+        var old = await q(sb.from('materials').select('file_path').eq('id', f.dataset.id).maybeSingle());
+        row.file_path = await upload(file, 'materials'); row.file_name = file.name;
+        if (old && old.file_path) await sb.storage.from('files').remove([old.file_path]);
+      }
+      await q(sb.from('materials').update(row).eq('id', f.dataset.id));
+      ui.matEdit = null; toast('Материал обновлён'); refresh();
+    },
+    'ff-new': async function (f, fd) {
+      var title = String(fd.get('title') || '').trim();
+      var url = String(fd.get('url') || '').trim();
+      var file = f.querySelector('input[type=file]').files[0];
+      if (!title) { showErr(f, 'Введите название'); return; }
+      if (!url && !file) { showErr(f, 'Добавьте ссылку или файл'); return; }
+      if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
+      var row = { folder_id: f.dataset.id, title: title, url: file ? '' : url, added_by: S.me.id };
+      if (file) { row.file_path = await upload(file, 'folders/' + f.dataset.id); row.file_name = file.name; row.size = file.size; }
+      await q(sb.from('folder_files').insert(row));
+      toast('Добавлено в папку'); refresh();
+    },
+    'goal-new': async function (f, fd) {
+      var n = parseInt(fd.get('target'), 10);
+      if (!n || n < 1) { showErr(f, 'Укажите, сколько слов выучить'); return; }
+      await q(sb.from('word_goals').insert({ student_id: sid(), target: n, folder_id: fd.get('folder') || null, due_date: fd.get('due') || null, set_by: S.me.id }));
+      toast('Цель поставлена'); refresh();
     },
     'hw-check': async function (f, fd) {
       await q(sb.from('homework').update({ status: 'checked', teacher_comment: String(fd.get('comment') || '').trim(), grade: String(fd.get('grade') || '').trim(), checked_at: new Date().toISOString() }).eq('id', f.dataset.id));
